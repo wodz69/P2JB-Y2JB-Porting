@@ -27,7 +27,7 @@ Confirmed working: jailbreak end-to-end + debug menu + USB-loaded
 ## How it works
 
 The payload triggers a 32-bit `cr_ref` overflow in the PS5 kernel
-(via ~2³² `kqueueex` syscalls, ~2 hours), uses the resulting
+(via ~2³² `kqueueex` syscalls, ~50 minutes), uses the resulting
 use-after-free to build a kernel read/write primitive, escalates the
 host process to root, enables the debug menu, and loads
 `elfldr_1320` from USB — exposing a remote ELF loader on TCP `:9021`.
@@ -111,7 +111,7 @@ kernel panics later on. If `master` is above 34, close YouTube
 (Options → Close application), reopen it, wait longer this time, and
 retry from step 2.
 
-### 5. Wait ~2 hours
+### 5. Wait ~50 minutes
 
 The cr_ref leak dominates the runtime. The payload sender will stay
 silent for the whole leak — no per-percentage progress is printed.
