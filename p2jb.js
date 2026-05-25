@@ -15,7 +15,7 @@
 
 (async function () {
     try {
-        const p2jb_version = "P2JB 2.5.1 (Y2JB port)";
+        const p2jb_version = "P2JB 2.5.2 (Y2JB port)";
 
         const PAGE_SIZE = 0x4000;
 
@@ -2048,7 +2048,11 @@
                 if (p_type !== 0x01n) continue;
 
                 const PROT_RW = PROT_READ | PROT_WRITE;
-                const PROT_RWX = PROT_READ | PROT_WRITE | PROT_EXEC;
+
+                const PROT_X = (typeof PROT_EXEC !== "undefined")
+                    ? PROT_EXEC
+                    : (typeof PROT_EXECUTE !== "undefined" ? PROT_EXECUTE : 0x4n);
+                const PROT_RWX = PROT_READ | PROT_WRITE | PROT_X;
 
                 if ((p_flags & 0x1n) === 0x1n) {
                     executable_start = p_vaddr;
