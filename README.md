@@ -192,14 +192,14 @@ along the way.
 - **`p2jb` kernel exploit (cr_ref overflow via `kqueueex`)** —
   Gezine / cheburek3000.
   [Luac0re](https://github.com/Gezine/Luac0re).
-- **TheFlow** — kqueue leak and UIO/IOV R/W primitives, from his
-  original netcontrol kernel exploit.
+- **netcontrol kernel exploit (original)** — TheFlow.
+  Source of the kqueue leak and UIO/IOV R/W primitives reused here.
 - **Y2JB userland framework** — Gezine.
   [Y2JB](https://github.com/Gezine/Y2JB).
 - **`kexp` post-jailbreak all-in-one shellcode** — ufm42
   ([kexp](https://github.com/ufm42/kexp)), merged into Y2JB 1.4.
-- **`notmaj0r` remote_lua_loader p2jb port** — used as a secondary
-  reference during the port.
+- **`remote_lua_loader` p2jb port** — notmaj0r.
+  Used as a secondary reference during the port.
 - **lapse (Y2JB)** — referenced for the `gpu.js` debug-menu apply
   flow; not the exploit itself (lapse exploits AIO, not `kqueueex`).
 - **Edigax** — help with the multi-core leak implementation, bringing
