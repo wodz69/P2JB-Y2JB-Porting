@@ -192,6 +192,8 @@ along the way.
 - **`p2jb` kernel exploit (cr_ref overflow via `kqueueex`)** —
   Gezine / cheburek3000.
   [Luac0re](https://github.com/Gezine/Luac0re).
+- **TheFlow** — kqueue leak and UIO/IOV R/W primitives, from his
+  original netcontrol kernel exploit.
 - **Y2JB userland framework** — Gezine.
   [Y2JB](https://github.com/Gezine/Y2JB).
 - **`kexp` post-jailbreak all-in-one shellcode** — ufm42
