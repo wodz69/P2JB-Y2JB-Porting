@@ -2434,13 +2434,14 @@
 
         await stage6(S);
         await stage7(S);
+
+        const yver = get_y2jb_version();
         if (y2jb_ge15(yver)) {
             await ulog("skipping stage_debug_menu, will be enabled by kexp");
         } else {
             await stage_debug_menu(S);
         }
 
-        const yver = get_y2jb_version();
         await ulog("stage_elfldr: detected " +
             (yver ? yver.str : "Y2JB <unknown version_string>"));
         if (y2jb_ge15(yver)) {
